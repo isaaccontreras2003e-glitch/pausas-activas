@@ -49,6 +49,18 @@ try {
   limpia.exec("DELETE FROM sesiones; UPDATE configuracion SET valor = '' WHERE clave = 'base_url';");
   limpia.close();
 
+  // --solo-datos: solo el archivo cifrado con los datos (para "Importar datos" en el servidor en la nube).
+  if (process.argv.includes('--solo-datos')) {
+    const escritorio = execFileSync('powershell', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"]).toString().trim() || os.homedir();
+    const fecha = new Date(Date.now() - 5 * 3_600_000).toISOString().slice(0, 10);
+    const archivo = path.join(escritorio, `datos-pausas-activas_${fecha}.cifrado`);
+    fs.writeFileSync(archivo, cifrar(fs.readFileSync(copia), password));
+    console.log(`\nLISTO. Datos cifrados en el Escritorio:\n  ${archivo}\n`);
+    console.log('Súbelo en el sistema en la nube: pantalla "Importar datos del PC anterior", con esta misma contraseña.');
+    fs.rmSync(temporal, { recursive: true, force: true });
+    process.exit(0);
+  }
+
   const incluir = ['server', 'web', 'scripts', 'datos', 'dist', 'tests', 'package.json', 'package-lock.json', 'vite.config.js', 'README.md', '.env.example', '.gitignore'];
   for (const nombre of [...incluir, ...fs.readdirSync(RAIZ).filter((f) => f.endsWith('.bat'))]) {
     const origen = path.join(RAIZ, nombre);

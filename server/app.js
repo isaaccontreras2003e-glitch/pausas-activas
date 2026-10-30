@@ -7,22 +7,25 @@ import { cabecerasSeguridad, mismoOrigen } from './seguridad.js';
 import { crearCanal } from './tiempo-real.js';
 import { ErrorApp } from './util.js';
 
-export function crearApp({ db, dirEstatico, puerto }) {
+export function crearApp({ db, dirEstatico, puerto, rutaDb, alImportarDatos }) {
   const app = express();
   const canal = crearCanal();
 
   app.disable('x-powered-by');
-  // Detrás de un proxy (nginx, Render, etc.) para obtener la IP real del colaborador.
-  app.set('trust proxy', process.env.TRUST_PROXY ?? 'loopback');
+  // Detrás de un proxy (Render, nginx…) para obtener la IP real del colaborador.
+  // TRUST_PROXY=1 confía en un salto (el proxy de Render); por defecto solo en este mismo equipo (túnel).
+  const confianza = process.env.TRUST_PROXY;
+  app.set('trust proxy', confianza ? (/^\d+$/.test(confianza) ? Number(confianza) : confianza) : 'loopback');
   app.use(cabecerasSeguridad);
-  // Peticiones pequeñas en todo el sistema; solo la importación de cargos (archivo Excel) admite más.
+  // Peticiones pequeñas en todo el sistema; solo la importación de cargos (Excel) y de datos admiten más.
   app.use('/api/admin/cargos/importar', express.json({ limit: '8mb' }));
+  app.use('/api/auth/importar-datos', express.json({ limit: '50mb' }));
   app.use(express.json({ limit: '64kb' }));
   app.use('/api', mismoOrigen(db, puerto));
 
   app.get('/api/salud', (req, res) => res.json({ ok: true }));
   app.use('/api/public', rutasPublicas({ db, canal }));
-  app.use('/api/auth', rutasAuth({ db }));
+  app.use('/api/auth', rutasAuth({ db, rutaDb, alImportarDatos }));
   app.use('/api/admin', rutasAdmin({ db, canal, puerto }));
   app.use('/api', () => {
     throw new ErrorApp(404, 'NO_ENCONTRADO', 'Ruta no encontrada.');

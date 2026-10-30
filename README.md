@@ -29,7 +29,21 @@ Registro de asistencia a pausas activas mediante código QR, con monitor en tiem
   ```
   En Cloudflare, el túnel debe apuntar a `http://localhost:3000`. Después ejecuta DETENER-SISTEMA.bat y ACTIVAR-SISTEMA.bat.
 
-## Instalador para otro PC (recomendado)
+## Publicar en la nube (Render) — enlace y QR fijos
+
+El repositorio incluye `render.yaml`: servidor web **Starter** con **disco permanente** de 1 GB en `/var/data` (base de datos y respaldos diarios). El plan gratuito no sirve porque no tiene disco: se borrarían los datos.
+
+1. En [render.com](https://render.com) entra con tu cuenta de GitHub → **New → Blueprint** → elige este repositorio → **Apply**. Render pide un medio de pago (≈ US$7–8/mes entre servidor y disco).
+2. Espera a que el despliegue quede en **Live**. La dirección fija es la que muestra Render, por ejemplo `https://pausas-activas.onrender.com`.
+3. Copia la clave en Render → servicio **pausas-activas** → **Environment** → `CLAVE_CONFIGURACION`.
+4. En el PC donde hoy funciona el sistema, ejecuta **EXPORTAR-DATOS.bat**: crea en el Escritorio `datos-pausas-activas_FECHA.cifrado`.
+5. Abre `https://TU-SERVICIO.onrender.com/admin` → **Importar datos del PC anterior** → sube el archivo, escribe su contraseña y la clave de configuración. El servidor se reinicia y ya puedes ingresar con tus cuentas de siempre. (O elige **Crear cuenta nueva** para empezar de cero.)
+6. El QR del panel ya apunta a la dirección fija: imprímelo o envíalo **una sola vez**.
+7. En el PC anterior: **DESACTIVAR-INICIO-AUTOMATICO.bat**, para que no queden dos sistemas.
+
+Cada `git push` a `main` vuelve a desplegar automáticamente; los datos del disco se conservan.
+
+## Instalador para otro PC
 
 1. En el PC actual: doble clic en **CREAR-INSTALADOR.bat** y elige una contraseña. Se crea en el Escritorio **Instalar-PausasActivasQR.exe** (≈70 MB): programa, motor Node.js incluido, túnel a internet y los datos **cifrados**.
 2. Envíalo (USB, Google Drive, OneDrive…) y comunica la contraseña por otro medio.

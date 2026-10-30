@@ -1,5 +1,9 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import QRCode from 'qrcode';
+import { descifrar } from './cifrado.js';
 import {
   cookieSesion,
   crearSesion,
@@ -20,7 +24,7 @@ import { ErrorApp, entero, hoyBogota, limitador, textoOpcional, textoRequerido, 
 const GESTION = ['admin', 'sst'];
 const ROLES = ['admin', 'sst', 'consulta'];
 
-export function rutasAuth({ db }) {
+export function rutasAuth({ db, rutaDb, alImportarDatos }) {
   const r = Router();
   const limiteLogin = limitador({ ventanaMs: 15 * 60_000, maximo: 20, mensaje: 'Demasiados intentos. Espera 15 minutos.' });
   const bloqueo = crearBloqueoCuentas();
@@ -44,24 +48,37 @@ export function rutasAuth({ db }) {
   const hayUsuarios = () => !!db.prepare('SELECT 1 FROM usuarios_admin LIMIT 1').get();
   const esEsteEquipo = (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip);
 
+  // En la nube nadie está "frente al servidor": la primera configuración exige la clave CLAVE_CONFIGURACION,
+  // que solo ve el dueño en el panel de Render. Sin esa clave nadie puede adueñarse de un sistema recién instalado.
+  const claveConfiguracionValida = (valor) => {
+    const esperada = process.env.CLAVE_CONFIGURACION ?? '';
+    if (esperada.length < 16 || !valor) return false;
+    const h = (s) => crypto.createHash('sha256').update(String(s)).digest();
+    return crypto.timingSafeEqual(h(valor), h(esperada));
+  };
+
   r.get('/estado', (req, res) => {
-    res.json({ requiere_cuenta: !hayUsuarios(), es_este_equipo: esEsteEquipo(req) });
+    res.json({
+      requiere_cuenta: !hayUsuarios(),
+      es_este_equipo: esEsteEquipo(req),
+      permite_clave: (process.env.CLAVE_CONFIGURACION ?? '').length >= 16,
+    });
   });
 
-  // Crear cuenta de administrador: siempre disponible, pero SOLO desde el equipo servidor. Desde el enlace
-  // público cualquiera podría hacerse administrador; ahí las cuentas las crea un administrador en Usuarios.
+  // Crear cuenta de administrador: desde el equipo servidor, o la primera cuenta con la clave de configuración.
+  // Desde el enlace público cualquiera podría hacerse administrador; ahí las cuentas las crea un administrador en Usuarios.
   r.post('/crear-cuenta', limiteLogin, (req, res) => {
     const primera = !hayUsuarios();
-    if (!esEsteEquipo(req)) {
+    const b = req.body ?? {};
+    if (!esEsteEquipo(req) && !(primera && claveConfiguracionValida(b.clave_configuracion))) {
       throw new ErrorApp(
         403,
         'SOLO_ESTE_EQUIPO',
         primera
-          ? 'La cuenta de administrador inicial solo se puede crear desde el computador donde está instalado el sistema.'
-          : 'Las cuentas nuevas se crean desde el computador del sistema, o las crea un administrador en el panel (Usuarios).',
+          ? 'Para crear la primera cuenta se necesita la clave de configuración (en Render: Environment → CLAVE_CONFIGURACION).'
+          : 'Las cuentas nuevas las crea un administrador en el panel (Usuarios).',
       );
     }
-    const b = req.body ?? {};
     const email = textoRequerido(b.email, 'email', 150).toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new ErrorApp(422, 'VALIDACION', 'Correo inválido.', { email: 'Escribe un correo válido.' });
     if (db.prepare('SELECT 1 FROM usuarios_admin WHERE email = ?').get(email)) {
@@ -79,6 +96,40 @@ export function rutasAuth({ db }) {
     res.setHeader('Set-Cookie', cookieSesion(req, crearSesion(db, id)));
     auditar(db, { ip: req.ip, usuario: { id, email } }, primera ? 'Creó la primera cuenta de administrador' : 'Creó cuenta de administrador (desde el equipo servidor)', email);
     res.status(201).json({ ok: true });
+  });
+
+  // Importar los datos del PC anterior (archivo .cifrado de EXPORTAR-DATOS.bat) en un sistema recién instalado.
+  // Se guarda junto a la base y el servidor se reinicia para cargarlo (ver index.js).
+  r.post('/importar-datos', limiteLogin, (req, res) => {
+    if (hayUsuarios()) throw new ErrorApp(409, 'YA_CONFIGURADO', 'Este sistema ya tiene datos y cuentas. La importación solo se permite en un sistema nuevo.');
+    const b = req.body ?? {};
+    if (!esEsteEquipo(req) && !claveConfiguracionValida(b.clave_configuracion)) {
+      throw new ErrorApp(403, 'CLAVE_INVALIDA', 'La clave de configuración no es correcta.', { clave_configuracion: 'Clave incorrecta.' });
+    }
+    if (!rutaDb || rutaDb === ':memory:') throw new ErrorApp(501, 'NO_DISPONIBLE', 'La importación no está disponible en este servidor.');
+    let datos;
+    try {
+      datos = descifrar(Buffer.from(String(b.archivo_base64 ?? ''), 'base64'), String(b.password ?? ''));
+    } catch (e) {
+      throw new ErrorApp(422, 'PAQUETE_INVALIDO', e.message, { password: e.message });
+    }
+    if (!datos.subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))) throw new ErrorApp(422, 'PAQUETE_INVALIDO', 'El archivo no contiene datos del sistema.');
+    // Se comprueba que sea una base del sistema con al menos un administrador antes de reemplazar nada.
+    const prueba = `${rutaDb}.verificar`;
+    fs.writeFileSync(prueba, datos);
+    try {
+      const candidata = new DatabaseSync(prueba, { readOnly: true });
+      const admins = candidata.prepare("SELECT COUNT(*) AS n FROM usuarios_admin WHERE rol = 'admin' AND activo = 1").get().n;
+      candidata.close();
+      if (!admins) throw new Error('sin administradores');
+    } catch {
+      fs.rmSync(prueba, { force: true });
+      throw new ErrorApp(422, 'PAQUETE_INVALIDO', 'El archivo no contiene un sistema válido con administradores.');
+    }
+    fs.renameSync(prueba, `${rutaDb}.importar`);
+    console.log('  Datos importados desde otro equipo. Reiniciando para cargarlos...');
+    res.status(202).json({ ok: true });
+    (alImportarDatos ?? (() => setTimeout(() => process.exit(0), 800)))();
   });
 
   r.post('/logout', (req, res) => {

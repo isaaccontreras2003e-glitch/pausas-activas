@@ -3,6 +3,10 @@ import { after, before, describe, test } from 'node:test';
 import { crearApp } from '../server/app.js';
 import { hashPassword } from '../server/auth.js';
 import { abrirDb } from '../server/db.js';
+import { cifrar } from '../server/cifrado.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 let servidor;
 let base;
@@ -375,5 +379,77 @@ describe('seguridad', () => {
     for (let i = 0; i < 5; i++) assert.equal((await intento('incorrecta1')).status, 401);
     // Ni con la contraseña correcta entra mientras dure el bloqueo.
     assert.equal((await intento('ClaveSegura77')).status, 429);
+  });
+});
+
+describe('nube (Render): clave de configuración e importación de datos', () => {
+  const CLAVE = 'clave-de-configuracion-de-prueba-123';
+  const remoto = { 'Content-Type': 'application/json', 'X-Forwarded-For': '181.50.10.20' };
+
+  test('sin la clave no se puede crear la primera cuenta desde fuera; con la clave sí', async () => {
+    process.env.CLAVE_CONFIGURACION = CLAVE;
+    const dbVacia = abrirDb(':memory:');
+    const srv = crearApp({ db: dbVacia, puerto: 0 }).listen(0);
+    await new Promise((r) => srv.once('listening', r));
+    const url = `http://127.0.0.1:${srv.address().port}`;
+    const cuerpo = { nombre: 'Ana Nube', email: 'ana@nube.co', password: 'ClaveSegura9', organizacion: 'Grupo IMES' };
+    try {
+      const estado = await fetch(`${url}/api/auth/estado`, { headers: remoto }).then((r) => r.json());
+      assert.equal(estado.permite_clave, true);
+      assert.equal(estado.es_este_equipo, false);
+      const sin = await fetch(`${url}/api/auth/crear-cuenta`, { method: 'POST', headers: remoto, body: JSON.stringify(cuerpo) });
+      assert.equal(sin.status, 403);
+      const mala = await fetch(`${url}/api/auth/crear-cuenta`, { method: 'POST', headers: remoto, body: JSON.stringify({ ...cuerpo, clave_configuracion: 'otra-clave-cualquiera-xyz' }) });
+      assert.equal(mala.status, 403);
+      const buena = await fetch(`${url}/api/auth/crear-cuenta`, { method: 'POST', headers: remoto, body: JSON.stringify({ ...cuerpo, clave_configuracion: CLAVE }) });
+      assert.equal(buena.status, 201);
+      // Con la cuenta creada, la clave ya no sirve para crear más administradores desde fuera.
+      const otra = await fetch(`${url}/api/auth/crear-cuenta`, { method: 'POST', headers: remoto, body: JSON.stringify({ ...cuerpo, email: 'x@x.co', clave_configuracion: CLAVE }) });
+      assert.equal(otra.status, 403);
+    } finally {
+      srv.close();
+      dbVacia.close();
+      delete process.env.CLAVE_CONFIGURACION;
+    }
+  });
+
+  test('importa los datos cifrados del PC anterior y pide reiniciar para cargarlos', async () => {
+    process.env.CLAVE_CONFIGURACION = CLAVE;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pausas-test-'));
+    // Base "del PC anterior" con un administrador, cifrada como lo hace EXPORTAR-DATOS.bat.
+    const origen = path.join(dir, 'origen.db');
+    const dbOrigen = abrirDb(origen);
+    dbOrigen.prepare("INSERT INTO usuarios_admin (email, nombre, rol, password_hash) VALUES ('isaac@imes.co', 'Isaac', 'admin', ?)").run(hashPassword('ClaveSegura1'));
+    dbOrigen.close();
+    const paquete = cifrar(fs.readFileSync(origen), 'ContrasenaPaquete1').toString('base64');
+
+    const rutaDb = path.join(dir, 'nube.db');
+    const dbNube = abrirDb(rutaDb);
+    let reinicio = 0;
+    const srv = crearApp({ db: dbNube, puerto: 0, rutaDb, alImportarDatos: () => reinicio++ }).listen(0);
+    await new Promise((r) => srv.once('listening', r));
+    const url = `http://127.0.0.1:${srv.address().port}`;
+    const enviar = (body) => fetch(`${url}/api/auth/importar-datos`, { method: 'POST', headers: remoto, body: JSON.stringify(body) });
+    try {
+      assert.equal((await enviar({ archivo_base64: paquete, password: 'ContrasenaPaquete1' })).status, 403); // sin clave
+      const mal = await enviar({ archivo_base64: paquete, password: 'incorrecta', clave_configuracion: CLAVE });
+      assert.equal(mal.status, 422);
+      const basura = await enviar({ archivo_base64: cifrar(Buffer.from('no es una base'), 'x1234567890').toString('base64'), password: 'x1234567890', clave_configuracion: CLAVE });
+      assert.equal(basura.status, 422);
+      const ok = await enviar({ archivo_base64: paquete, password: 'ContrasenaPaquete1', clave_configuracion: CLAVE });
+      assert.equal(ok.status, 202);
+      assert.equal(reinicio, 1);
+      assert.ok(fs.existsSync(`${rutaDb}.importar`));
+    } finally {
+      srv.close();
+      dbNube.close();
+      delete process.env.CLAVE_CONFIGURACION;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('no permite importar encima de un sistema que ya tiene cuentas', async () => {
+    const r = await api('/api/auth/importar-datos', { method: 'POST', body: { archivo_base64: 'AAAA', password: 'x' } });
+    assert.equal(r.status, 409);
   });
 });

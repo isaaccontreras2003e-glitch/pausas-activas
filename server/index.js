@@ -5,12 +5,22 @@ import { crearApp } from './app.js';
 import { hashPassword } from './auth.js';
 import QRCode from 'qrcode';
 import { abrirDb, guardarValor, leerConfig } from './db.js';
-import { esUrlLocal, urlBaseDetectada, urlBasePublica } from './red.js';
+import { esUrlLocal, urlBaseDetectada, urlBasePublica, urlNube } from './red.js';
 import { abrirTunel } from './tunel.js';
 import { hoyBogota } from './util.js';
 
 const PUERTO = Number(process.env.PORT || 3000);
-const db = abrirDb(process.env.DB_PATH || path.join(raiz, 'data', 'pausas.db'));
+const RUTA_DB = path.resolve(process.env.DB_PATH || path.join(raiz, 'data', 'pausas.db'));
+
+// Datos importados desde otro equipo (panel → "Importar datos"): reemplazan a la base vacía antes de abrirla.
+if (fs.existsSync(`${RUTA_DB}.importar`)) {
+  for (const extra of ['-wal', '-shm']) fs.rmSync(`${RUTA_DB}${extra}`, { force: true });
+  if (fs.existsSync(RUTA_DB)) fs.renameSync(RUTA_DB, `${RUTA_DB}.antes-de-importar-${Date.now()}`);
+  fs.renameSync(`${RUTA_DB}.importar`, RUTA_DB);
+  console.log('  Datos importados cargados.');
+}
+
+const db = abrirDb(RUTA_DB);
 
 // Sin usuarios, el panel muestra la pantalla "Crear cuenta de administrador" (solo desde este equipo).
 // Para instalaciones automatizadas se puede crear desde .env con ADMIN_EMAIL y ADMIN_PASSWORD.
@@ -26,12 +36,17 @@ if (!db.prepare('SELECT 1 FROM usuarios_admin LIMIT 1').get()) {
   }
 }
 
-const app = crearApp({ db, dirEstatico: path.join(raiz, 'dist'), puerto: PUERTO });
+const app = crearApp({ db, dirEstatico: path.join(raiz, 'dist'), puerto: PUERTO, rutaDb: RUTA_DB });
 
 const conInternet = process.argv.includes('--internet');
 
 // Un enlace de túnel de un arranque anterior ya no existe: sin --internet se vuelve a la dirección local.
 if (!conInternet) db.prepare("UPDATE configuracion SET valor = '' WHERE clave = 'base_url' AND valor LIKE '%.trycloudflare.com%'").run();
+// En la nube (Render) la dirección es fija: el QR nunca cambia.
+if (!conInternet && urlNube()) {
+  guardarValor(db, 'enlace_tipo', 'fijo');
+  if (!leerConfig(db).qr_actualizado_en) guardarValor(db, 'qr_actualizado_en', new Date().toISOString());
+}
 
 const servidor = app.listen(PUERTO, '0.0.0.0', () => {
   if (conInternet) {
@@ -54,7 +69,8 @@ const servidor = app.listen(PUERTO, '0.0.0.0', () => {
 
 // Copia de seguridad diaria de la base de datos (se conservan 30 días). VACUUM INTO hace una copia
 // consistente aunque el sistema esté recibiendo registros en ese momento.
-const DIR_RESPALDOS = path.join(raiz, 'data', 'respaldos', 'diarios');
+// Junto a la base de datos: en la nube es el disco permanente.
+const DIR_RESPALDOS = path.join(path.dirname(RUTA_DB), 'respaldos', 'diarios');
 function respaldoDiario() {
   try {
     fs.mkdirSync(DIR_RESPALDOS, { recursive: true });

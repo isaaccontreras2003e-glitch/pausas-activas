@@ -21,10 +21,13 @@ export function urlBaseDetectada(puerto) {
   return `http://${ipLocal()}:${puerto}`;
 }
 
-/** URL que se codifica en los QR: la configurada por el administrador o, si no hay, la de red local. */
+/** URL fija del servidor en la nube: PUBLIC_URL o la que Render asigna (RENDER_EXTERNAL_URL). */
+export const urlNube = () => (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').trim().replace(/\/+$/, '');
+
+/** URL que se codifica en los QR: la configurada por el administrador, la de la nube o, si no hay, la de red local. */
 export function urlBasePublica(db, puerto) {
   const configurada = (leerConfig(db).base_url ?? '').trim().replace(/\/+$/, '');
-  return configurada || urlBaseDetectada(puerto);
+  return configurada || urlNube() || urlBaseDetectada(puerto);
 }
 
 /** true si la URL solo funciona dentro de la red de la oficina (o en este mismo equipo). */
