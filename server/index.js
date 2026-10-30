@@ -1,54 +1,25 @@
 import { RAIZ as raiz } from './entorno.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { crearApp } from './app.js';
-import { hashPassword } from './auth.js';
 import QRCode from 'qrcode';
-import { abrirDb, guardarValor, leerConfig } from './db.js';
-import { esUrlLocal, urlBaseDetectada, urlBasePublica, urlNube } from './red.js';
+import { crearApp } from './app.js';
+import { guardarValor, leerConfig } from './db.js';
+import { destinoDb, prepararDb } from './preparar.js';
+import { esUrlLocal, urlBaseDetectada, urlBasePublica } from './red.js';
 import { abrirTunel } from './tunel.js';
 import { hoyBogota } from './util.js';
 
 const PUERTO = Number(process.env.PORT || 3000);
-const RUTA_DB = path.resolve(process.env.DB_PATH || path.join(raiz, 'data', 'pausas.db'));
-
-// Datos importados desde otro equipo (panel → "Importar datos"): reemplazan a la base vacía antes de abrirla.
-if (fs.existsSync(`${RUTA_DB}.importar`)) {
-  for (const extra of ['-wal', '-shm']) fs.rmSync(`${RUTA_DB}${extra}`, { force: true });
-  if (fs.existsSync(RUTA_DB)) fs.renameSync(RUTA_DB, `${RUTA_DB}.antes-de-importar-${Date.now()}`);
-  fs.renameSync(`${RUTA_DB}.importar`, RUTA_DB);
-  console.log('  Datos importados cargados.');
-}
-
-const db = abrirDb(RUTA_DB);
-
-// Sin usuarios, el panel muestra la pantalla "Crear cuenta de administrador" (solo desde este equipo).
-// Para instalaciones automatizadas se puede crear desde .env con ADMIN_EMAIL y ADMIN_PASSWORD.
-if (!db.prepare('SELECT 1 FROM usuarios_admin LIMIT 1').get()) {
-  if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
-    db.prepare("INSERT INTO usuarios_admin (email, nombre, rol, password_hash) VALUES (?, 'Administrador', 'admin', ?)").run(
-      process.env.ADMIN_EMAIL,
-      hashPassword(process.env.ADMIN_PASSWORD),
-    );
-    console.log(`\n  Usuario administrador creado desde .env: ${process.env.ADMIN_EMAIL}\n`);
-  } else {
-    console.log(`\n  PRIMER USO: abre http://localhost:${PUERTO}/admin en ESTE equipo para crear tu cuenta de administrador.\n`);
-  }
-}
-
-const app = crearApp({ db, dirEstatico: path.join(raiz, 'dist'), puerto: PUERTO, rutaDb: RUTA_DB });
-
 const conInternet = process.argv.includes('--internet');
+const db = await prepararDb({ conInternet });
 
-// Un enlace de túnel de un arranque anterior ya no existe: sin --internet se vuelve a la dirección local.
-if (!conInternet) db.prepare("UPDATE configuracion SET valor = '' WHERE clave = 'base_url' AND valor LIKE '%.trycloudflare.com%'").run();
-// En la nube (Render) la dirección es fija: el QR nunca cambia.
-if (!conInternet && urlNube()) {
-  guardarValor(db, 'enlace_tipo', 'fijo');
-  if (!leerConfig(db).qr_actualizado_en) guardarValor(db, 'qr_actualizado_en', new Date().toISOString());
+if (!(await db.prepare('SELECT 1 AS ok FROM usuarios_admin LIMIT 1').get())) {
+  console.log(`\n  PRIMER USO: abre http://localhost:${PUERTO}/admin en ESTE equipo para crear tu cuenta de administrador.\n`);
 }
 
-const servidor = app.listen(PUERTO, '0.0.0.0', () => {
+const app = crearApp({ db, dirEstatico: path.join(raiz, 'dist'), puerto: PUERTO });
+
+const servidor = app.listen(PUERTO, '0.0.0.0', async () => {
   if (conInternet) {
     console.log('  Pausas Activas QR en marcha. Abriendo enlace público a internet, espera unos segundos...');
     const tunel = abrirTunel(PUERTO, (url, fijo) => publicarQrDelDia(url, fijo));
@@ -56,7 +27,7 @@ const servidor = app.listen(PUERTO, '0.0.0.0', () => {
     if (tunel && !tunel.fijo) setInterval(() => revisarRenovacionDiaria(tunel), 30_000).unref();
     return;
   }
-  const publica = urlBasePublica(db, PUERTO);
+  const publica = await urlBasePublica(db, PUERTO);
   console.log('  Pausas Activas QR en marcha');
   console.log(`  - Panel de SST:              http://localhost:${PUERTO}/admin`);
   console.log(`  - Formulario (lo abre el QR): ${publica}/pausas`);
@@ -67,16 +38,16 @@ const servidor = app.listen(PUERTO, '0.0.0.0', () => {
   }
 });
 
-// Copia de seguridad diaria de la base de datos (se conservan 30 días). VACUUM INTO hace una copia
-// consistente aunque el sistema esté recibiendo registros en ese momento.
-// Junto a la base de datos: en la nube es el disco permanente.
+// Copia de seguridad diaria de la base de datos local (se conservan 30 días). VACUUM INTO hace una copia
+// consistente aunque el sistema esté recibiendo registros. Con la base en Turso, los respaldos los hace Turso.
+const { destino: RUTA_DB } = destinoDb();
 const DIR_RESPALDOS = path.join(path.dirname(RUTA_DB), 'respaldos', 'diarios');
-function respaldoDiario() {
+async function respaldoDiario() {
   try {
     fs.mkdirSync(DIR_RESPALDOS, { recursive: true });
     const destino = path.join(DIR_RESPALDOS, `pausas-${hoyBogota()}.db`);
     if (!fs.existsSync(destino)) {
-      db.exec(`VACUUM INTO '${destino.replaceAll("'", "''")}'`);
+      await db.copiarA(destino);
       console.log(`  Copia de seguridad diaria guardada: ${path.basename(destino)}`);
     }
     const limite = Date.now() - 30 * 86_400_000;
@@ -88,23 +59,24 @@ function respaldoDiario() {
     console.error(`  No se pudo hacer la copia de seguridad diaria: ${e.message}`);
   }
 }
-if (!process.env.DB_PATH?.includes(':memory:')) {
+if (db.local && RUTA_DB !== ':memory:') {
   respaldoDiario();
   setInterval(respaldoDiario, 60 * 60_000).unref();
 }
 
 /** Deja el enlace nuevo en el panel, en ENLACE-ACTUAL.txt y como imagen QR-DEL-DIA.png (más un histórico por día). */
 async function publicarQrDelDia(url, fijo) {
-  db.prepare("UPDATE configuracion SET valor = ? WHERE clave = 'base_url'").run(url);
-  guardarValor(db, 'qr_actualizado_en', new Date().toISOString());
-  guardarValor(db, 'enlace_tipo', fijo ? 'fijo' : 'temporal');
+  await db.prepare("UPDATE configuracion SET valor = ? WHERE clave = 'base_url'").run(url);
+  await guardarValor(db, 'qr_actualizado_en', new Date().toISOString());
+  await guardarValor(db, 'enlace_tipo', fijo ? 'fijo' : 'temporal');
+  const config = await leerConfig(db);
 
   const ahoraBogota = new Date(Date.now() - 5 * 3_600_000).toISOString();
   const fecha = new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   const hora = new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: 'numeric', minute: '2-digit' });
   const aviso = fijo
     ? 'Este enlace es FIJO: el QR impreso funciona siempre que este PC esté encendido.'
-    : `QR DEL DÍA: se renueva automáticamente cada día a las ${leerConfig(db).hora_renovacion_qr}.\r\n` +
+    : `QR DEL DÍA: se renueva automáticamente cada día a las ${config.hora_renovacion_qr}.\r\n` +
       'Envía a los colaboradores el QR o el enlace de HOY (imagen QR-DEL-DIA.png o el panel > Código QR).\r\n' +
       'Si el internet se cae durante el día, se genera uno nuevo y este archivo se actualiza.';
   fs.writeFileSync(
@@ -128,14 +100,14 @@ async function publicarQrDelDia(url, fijo) {
 }
 
 /** Si el QR vigente se generó antes de la hora de renovación de hoy, genera el QR del día. */
-function revisarRenovacionDiaria(tunel) {
-  const config = leerConfig(db);
+async function revisarRenovacionDiaria(tunel) {
+  const config = await leerConfig(db);
   const [h, m] = (/^\d{2}:\d{2}$/.test(config.hora_renovacion_qr) ? config.hora_renovacion_qr : '05:30').split(':');
   const instante = new Date(`${hoyBogota()}T${h}:${m}:00-05:00`);
   const ultimo = new Date(config.qr_actualizado_en || 0);
   if (Date.now() >= instante.getTime() && ultimo < instante) {
     // Se marca de una vez para no repetir mientras el túnel nuevo se conecta.
-    guardarValor(db, 'qr_actualizado_en', new Date().toISOString());
+    await guardarValor(db, 'qr_actualizado_en', new Date().toISOString());
     tunel.reabrir(`Renovación diaria del QR (${config.hora_renovacion_qr})`);
   }
 }
@@ -150,8 +122,8 @@ servidor.on('error', (e) => {
 });
 
 for (const senal of ['SIGINT', 'SIGTERM']) {
-  process.on(senal, () => {
-    db.close();
+  process.on(senal, async () => {
+    await db.cerrar();
     process.exit(0);
   });
 }

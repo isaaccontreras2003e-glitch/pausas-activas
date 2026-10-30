@@ -3,10 +3,26 @@
 //      npm run demo -- --solo-catalogos
 import { RAIZ as raiz } from './entorno.js';
 import path from 'node:path';
-import { abrirDb, transaccion } from './db.js';
+import { DatabaseSync } from 'node:sqlite';
+import { abrirDb } from './db.js';
 import { tokenCorto } from './util.js';
 
-const db = abrirDb(process.env.DB_PATH || path.join(raiz, 'data', 'pausas.db'));
+// Solo para el archivo local: se prepara la estructura y luego se trabaja directo sobre el archivo.
+const ruta = process.env.DB_PATH || path.join(raiz, 'data', 'pausas.db');
+await (await abrirDb(ruta)).cerrar();
+const db = new DatabaseSync(ruta);
+db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+const transaccion = (base, fn) => {
+  base.exec('BEGIN IMMEDIATE');
+  try {
+    const r = fn();
+    base.exec('COMMIT');
+    return r;
+  } catch (e) {
+    base.exec('ROLLBACK');
+    throw e;
+  }
+};
 const soloCatalogos = process.argv.includes('--solo-catalogos');
 
 if (db.prepare('SELECT 1 FROM registros_pausa LIMIT 1').get() && !soloCatalogos) {

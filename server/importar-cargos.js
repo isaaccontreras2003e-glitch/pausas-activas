@@ -78,7 +78,7 @@ export async function importarCargos(db, { nombre_archivo, archivo_base64, aplic
 
   const existentesPorCodigo = new Map();
   const existentesPorNombre = new Map();
-  for (const c of db.prepare('SELECT id, codigo, nombre, area, activo FROM cargos').all()) {
+  for (const c of await db.prepare('SELECT id, codigo, nombre, area, activo FROM cargos').all()) {
     if (c.codigo) existentesPorCodigo.set(sinTildes(c.codigo), c);
     existentesPorNombre.set(c.nombre.toLowerCase(), c);
   }
@@ -106,19 +106,19 @@ export async function importarCargos(db, { nombre_archivo, archivo_base64, aplic
   });
 
   if (aplicar === true) {
-    transaccion(db, () => {
-      const insertar = db.prepare('INSERT INTO cargos (nombre, codigo, area) VALUES (?, ?, ?) RETURNING id');
-      const actualizar = db.prepare('UPDATE cargos SET nombre = ?, codigo = ?, area = ?, activo = 1 WHERE id = ?');
+    await transaccion(db, async (tx) => {
+      const insertar = tx.prepare('INSERT INTO cargos (nombre, codigo, area) VALUES (?, ?, ?) RETURNING id');
+      const actualizar = tx.prepare('UPDATE cargos SET nombre = ?, codigo = ?, area = ?, activo = 1 WHERE id = ?');
       // Los cargos del archivo se asignan (sin quitar asignaciones previas) a las empresas elegidas.
-      const vincular = db.prepare('INSERT OR IGNORE INTO empresa_cargo (empresa_id, cargo_id) VALUES (?, ?)');
+      const vincular = tx.prepare('INSERT OR IGNORE INTO empresa_cargo (empresa_id, cargo_id) VALUES (?, ?)');
       const ids = [];
-      for (const c of resultado.nuevos) ids.push(insertar.get(c.nombre, c.codigo, c.area).id);
+      for (const c of resultado.nuevos) ids.push((await insertar.get(c.nombre, c.codigo, c.area)).id);
       for (const c of resultado.actualizados) {
-        actualizar.run(c.nombre, c.codigo, c.area, c.id);
+        await actualizar.run(c.nombre, c.codigo, c.area, c.id);
         ids.push(c.id);
       }
       for (const c of resultado.sin_cambios) ids.push(c.id);
-      for (const e of empresas) for (const id of ids) vincular.run(e, id);
+      for (const e of empresas) for (const id of ids) await vincular.run(e, id);
     });
     resultado.aplicado = true;
   }

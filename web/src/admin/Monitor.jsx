@@ -45,10 +45,24 @@ export default function Monitor() {
 
   // Tiempo real: cada registro llega por SSE; se pinta al instante y los consolidados se recalculan con pausa.
   useEffect(() => {
-    const fuente = new EventSource('/api/admin/stream');
-    fuente.onopen = () => setConectado(true);
-    fuente.onerror = () => setConectado(false);
-    fuente.addEventListener('registro', (e) => {
+    let fuente = null;
+    let sondeo = null;
+    // En la nube (Vercel) no hay conexión permanente: se consulta cada 15 s.
+    fetch('/api/salud')
+      .then((r) => r.json())
+      .catch(() => ({ tiempo_real: true }))
+      .then(({ tiempo_real }) => {
+        if (tiempo_real === false) {
+          setConectado(true);
+          sondeo = setInterval(cargar, 15_000);
+          return;
+        }
+        fuente = new EventSource('/api/admin/stream');
+        fuente.onopen = () => setConectado(true);
+        fuente.onerror = () => setConectado(false);
+        fuente.addEventListener('registro', alRecibir);
+      });
+    const alRecibir = (e) => {
       const reg = JSON.parse(e.data);
       if (!coincide(reg, refFiltros.current)) return;
       setDatos((d) =>
@@ -67,11 +81,12 @@ export default function Monitor() {
       setNuevos((s) => new Set(s).add(reg.id));
       clearTimeout(refTemporizador.current);
       refTemporizador.current = setTimeout(cargar, 1500);
-    });
+    };
     const tic = setInterval(() => setTic((t) => t + 1), 15_000);
     const respaldo = setInterval(cargar, 60_000);
     return () => {
-      fuente.close();
+      fuente?.close();
+      clearInterval(sondeo);
       clearInterval(tic);
       clearInterval(respaldo);
       clearTimeout(refTemporizador.current);

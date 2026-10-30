@@ -12,12 +12,11 @@ export function rutasPublicas({ db, canal }) {
     mensaje: 'Hay demasiados registros desde esta red. Espera un minuto e intenta de nuevo.',
   });
 
-  r.get('/punto/:token', (req, res) => {
-    const punto = obtenerPuntoPublico(db, req.params.token);
-    const config = leerConfig(db);
+  r.get('/punto/:token', async (req, res) => {
+    const [punto, config, catalogos] = await Promise.all([obtenerPuntoPublico(db, req.params.token), leerConfig(db), catalogosPublicos(db)]);
     res.json({
       punto,
-      ...catalogosPublicos(db),
+      ...catalogos,
       config: {
         organizacion: config.organizacion,
         texto_tratamiento_datos: config.texto_tratamiento_datos.replaceAll('{organizacion}', config.organizacion),
@@ -27,8 +26,8 @@ export function rutasPublicas({ db, canal }) {
     });
   });
 
-  r.post('/registro', limiteRegistro, (req, res) => {
-    const registro = registrarPausa(db, req.body ?? {}, req.get('user-agent'));
+  r.post('/registro', limiteRegistro, async (req, res) => {
+    const registro = await registrarPausa(db, req.body ?? {}, req.get('user-agent'));
     canal.emitir(registro);
     res.status(201).json({
       id: registro.id,

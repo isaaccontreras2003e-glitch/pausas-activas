@@ -1,6 +1,6 @@
-import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { conectar } from './basedatos.js';
 
 // Fechas en UTC con formato ISO (2026-10-29T15:02:11.123Z). Se presentan en hora de Bogotá.
 const AHORA = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
@@ -113,6 +113,14 @@ CREATE TABLE IF NOT EXISTS auditoria (
 );
 CREATE INDEX IF NOT EXISTS ix_auditoria_fecha ON auditoria (fecha);
 
+-- Intentos fallidos de inicio de sesión por correo (bloqueo de 15 min). Va en la base para que funcione
+-- también en la nube, donde cada solicitud puede atenderla una instancia distinta del servidor.
+CREATE TABLE IF NOT EXISTS bloqueos_login (
+  email  TEXT PRIMARY KEY,
+  fallos INTEGER NOT NULL DEFAULT 0,
+  hasta  TEXT
+);
+
 -- token = SHA-256 del valor de la cookie: si alguien copia la base de datos, no puede usar las sesiones.
 CREATE TABLE IF NOT EXISTS sesiones (
   token      TEXT PRIMARY KEY,
@@ -157,58 +165,60 @@ export const CONFIG_POR_DEFECTO = {
     'Equipo de Seguridad y Salud en el Trabajo',
 };
 
-export function abrirDb(ruta) {
-  if (ruta !== ':memory:') fs.mkdirSync(path.dirname(ruta), { recursive: true });
-  const db = new DatabaseSync(ruta);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-  db.exec(ESQUEMA);
-  migrar(db);
-  const insertar = db.prepare('INSERT OR IGNORE INTO configuracion (clave, valor) VALUES (?, ?)');
-  for (const [clave, valor] of Object.entries(CONFIG_POR_DEFECTO)) insertar.run(clave, valor);
-  db.prepare("INSERT OR IGNORE INTO puntos_qr (token, sede_id, descripcion) VALUES (?, NULL, 'QR principal')").run(TOKEN_PRINCIPAL);
+/**
+ * Abre (y prepara) la base de datos.
+ * `destino`: ruta del archivo local (o ':memory:'), o la URL de Turso (libsql://…) con su token.
+ */
+export async function abrirDb(destino, authToken) {
+  const remota = /^(libsql|https?|wss?):\/\//i.test(destino);
+  if (!remota && destino !== ':memory:') fs.mkdirSync(path.dirname(destino), { recursive: true });
+  const db = await conectar(destino, authToken);
+  await db.exec(ESQUEMA);
+  await migrar(db);
+  await db.transaccion(async (tx) => {
+    for (const [clave, valor] of Object.entries(CONFIG_POR_DEFECTO)) {
+      await tx.prepare('INSERT OR IGNORE INTO configuracion (clave, valor) VALUES (?, ?)').run(clave, valor);
+    }
+    await tx.prepare("INSERT OR IGNORE INTO puntos_qr (token, sede_id, descripcion) VALUES (?, NULL, 'QR principal')").run(TOKEN_PRINCIPAL);
+  });
   return db;
 }
 
 /** Cambios sobre bases de datos creadas con versiones anteriores. Cada paso es idempotente. */
-function migrar(db) {
-  const columnas = new Set(db.prepare('PRAGMA table_info(registros_pausa)').all().map((c) => c.name));
+async function migrar(db) {
+  const columnas = new Set((await db.prepare('PRAGMA table_info(registros_pausa)').all()).map((c) => c.name));
   if (!columnas.has('realizo_pausa')) {
-    transaccion(db, () => {
-      db.exec('ALTER TABLE registros_pausa ADD COLUMN realizo_pausa INTEGER NOT NULL DEFAULT 1');
-      db.exec('ALTER TABLE registros_pausa ADD COLUMN hora_pausa TEXT');
-      db.exec('ALTER TABLE registros_pausa ADD COLUMN motivo_no TEXT');
+    await db.transaccion(async (tx) => {
+      await tx.prepare('ALTER TABLE registros_pausa ADD COLUMN realizo_pausa INTEGER NOT NULL DEFAULT 1').run();
+      await tx.prepare('ALTER TABLE registros_pausa ADD COLUMN hora_pausa TEXT').run();
+      await tx.prepare('ALTER TABLE registros_pausa ADD COLUMN motivo_no TEXT').run();
       // Los registros anteriores eran todos "sí": la hora de la pausa es la hora del registro.
-      db.exec("UPDATE registros_pausa SET hora_pausa = strftime('%H:%M', registrado_en, '-5 hours')");
+      await tx.prepare("UPDATE registros_pausa SET hora_pausa = strftime('%H:%M', registrado_en, '-5 hours')").run();
       // Si el mensaje de invitación no se había personalizado, se actualiza con el paso nuevo.
       const anterior = '2️⃣ Escribe tu nombre completo y tu número de cédula.\n3️⃣ Elige tu empresa, sede y cargo.\n4️⃣ Toca *Registrar pausa activa* y espera el mensaje de confirmación ✅';
-      const fila = db.prepare("SELECT valor FROM configuracion WHERE clave = 'mensaje_invitacion'").get();
+      const fila = await tx.prepare("SELECT valor FROM configuracion WHERE clave = 'mensaje_invitacion'").get();
       if (fila?.valor.includes(anterior)) {
-        db.prepare("UPDATE configuracion SET valor = ? WHERE clave = 'mensaje_invitacion'").run(
-          fila.valor.replace(anterior, `${PASOS_INVITACION}5️⃣ Toca *Enviar registro* y espera el mensaje de confirmación ✅`),
-        );
+        await tx
+          .prepare("UPDATE configuracion SET valor = ? WHERE clave = 'mensaje_invitacion'")
+          .run(fila.valor.replace(anterior, `${PASOS_INVITACION}5️⃣ Toca *Enviar registro* y espera el mensaje de confirmación ✅`));
       }
     });
   }
 }
 
+/** Ejecuta `fn(tx)` en una transacción: o se guarda todo, o nada. Dentro, usa siempre `tx`, no `db`. */
 export function transaccion(db, fn) {
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const resultado = fn();
-    db.exec('COMMIT');
-    return resultado;
-  } catch (e) {
-    db.exec('ROLLBACK');
-    throw e;
-  }
+  return db.transaccion(fn);
 }
 
 /** Valores internos (no editables desde Configuración), p. ej. cuándo se generó el QR del día. */
-export function guardarValor(db, clave, valor) {
-  db.prepare('INSERT INTO configuracion (clave, valor) VALUES (?, ?) ON CONFLICT (clave) DO UPDATE SET valor = excluded.valor').run(clave, String(valor));
+export async function guardarValor(db, clave, valor) {
+  await db
+    .prepare('INSERT INTO configuracion (clave, valor) VALUES (?, ?) ON CONFLICT (clave) DO UPDATE SET valor = excluded.valor')
+    .run(clave, String(valor));
 }
 
-export function leerConfig(db) {
-  const filas = db.prepare('SELECT clave, valor FROM configuracion').all();
+export async function leerConfig(db) {
+  const filas = await db.prepare('SELECT clave, valor FROM configuracion').all();
   return Object.fromEntries(filas.map((f) => [f.clave, f.valor]));
 }

@@ -37,14 +37,13 @@ if (fs.existsSync(ruta)) {
   console.log(`Respaldo guardado en: ${carpeta}`);
 }
 
-const db = abrirDb(ruta);
+const db = await abrirDb(ruta);
 console.log('Datos borrados. El sistema quedó como recién instalado (solo existe el QR principal fijo).');
 
 const iEmpresas = args.indexOf('--empresas');
 if (iEmpresas >= 0) {
   const nombres = String(args[iEmpresas + 1] ?? '').split(',').map((n) => n.trim()).filter(Boolean);
-  const insertar = db.prepare('INSERT OR IGNORE INTO empresas (nombre) VALUES (?)');
-  for (const n of nombres) insertar.run(n);
+  for (const n of nombres) await db.prepare('INSERT OR IGNORE INTO empresas (nombre) VALUES (?)').run(n);
   console.log(`Empresas creadas: ${nombres.join(', ')}.`);
 }
 
@@ -53,7 +52,7 @@ for (let i = 0; i < args.length; i++) {
   if (args[i] !== '--cargos') continue;
   const [empresa, archivoRel] = String(args[i + 1] ?? '').split('=');
   const archivo = path.resolve(archivoRel ?? '');
-  const fila = db.prepare('SELECT id FROM empresas WHERE nombre = ?').get(empresa.trim());
+  const fila = await db.prepare('SELECT id FROM empresas WHERE nombre = ?').get(empresa.trim());
   if (!fila) {
     console.error(`La empresa "${empresa}" no existe; inclúyela en --empresas.`);
     process.exit(1);
@@ -67,5 +66,5 @@ for (let i = 0; i < args.length; i++) {
   const total = r.nuevos.length + r.actualizados.length + r.sin_cambios.length;
   console.log(`Cargos de ${empresa}: ${total} (${r.nuevos.length} nuevos, ${total - r.nuevos.length} compartidos con otra empresa)${r.errores.length ? `, ${r.errores.length} filas con error` : ''}.`);
 }
-db.close();
+await db.cerrar();
 console.log('Abre el sistema y entra a http://localhost:3000/admin en este equipo para crear tu cuenta de administrador.');

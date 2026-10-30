@@ -76,71 +76,67 @@ function cubetas(filtro, gran) {
   return lista;
 }
 
-export function resumen(db, filtro, usuario) {
-  const totales = db
-    .prepare(
-      `SELECT COUNT(*) AS registros, COALESCE(SUM(r.realizo_pausa), 0) AS si,
-              COUNT(DISTINCT CASE WHEN r.realizo_pausa = 1 THEN r.colaborador_id END) AS personas,
-              MAX(r.registrado_en) AS ultimo
-         FROM registros_pausa r WHERE ${filtro.sql}`,
-    )
-    .get(filtro.params);
-
+export async function resumen(db, filtro, usuario) {
   // Mismo filtro, desplazado al período inmediatamente anterior de igual duración.
   const duracion = new Date(filtro.hasta) - new Date(filtro.desde) + 1;
-  const anterior = db
-    .prepare(`SELECT COALESCE(SUM(r.realizo_pausa), 0) AS si FROM registros_pausa r WHERE ${filtro.sql}`)
-    .get({
-      ...filtro.params,
-      desde: new Date(new Date(filtro.desde).getTime() - duracion).toISOString(),
-      hasta: new Date(new Date(filtro.hasta).getTime() - duracion).toISOString(),
-    });
-
   // Pausas realizadas en el tiempo. Por hora se usa la hora que declaró el colaborador, no la del envío.
   const gran = granularidad(filtro);
   const expresionPeriodo =
     gran === 'hora'
       ? "strftime('%Y-%m-%d', r.registrado_en, '-5 hours') || ' ' || substr(COALESCE(r.hora_pausa, strftime('%H:%M', r.registrado_en, '-5 hours')), 1, 2) || ':00'"
       : `strftime('${FORMATO_CUBETA[gran]}', r.registrado_en, '-5 hours')`;
-  const conteos = new Map(
+  const empresaFija = usuario?.empresa_id;
+
+  // Todas las consultas a la vez: con la base en la nube cada una tarda un viaje de red.
+  const [totales, anterior, filasSerie, sedesActivas, porSede, porCargo, porEmpresa, porPunto, ultimos] = await Promise.all([
+    db
+      .prepare(
+        `SELECT COUNT(*) AS registros, COALESCE(SUM(r.realizo_pausa), 0) AS si,
+                COUNT(DISTINCT CASE WHEN r.realizo_pausa = 1 THEN r.colaborador_id END) AS personas,
+                MAX(r.registrado_en) AS ultimo
+           FROM registros_pausa r WHERE ${filtro.sql}`,
+      )
+      .get(filtro.params),
+    db.prepare(`SELECT COALESCE(SUM(r.realizo_pausa), 0) AS si FROM registros_pausa r WHERE ${filtro.sql}`).get({
+      ...filtro.params,
+      desde: new Date(new Date(filtro.desde).getTime() - duracion).toISOString(),
+      hasta: new Date(new Date(filtro.hasta).getTime() - duracion).toISOString(),
+    }),
     db
       .prepare(
         `SELECT ${expresionPeriodo} AS periodo, COUNT(*) AS registros
            FROM registros_pausa r WHERE ${filtro.sql} AND r.realizo_pausa = 1 GROUP BY periodo`,
       )
+      .all(filtro.params),
+    (empresaFija
+      ? db.prepare('SELECT COUNT(*) AS n FROM sedes s JOIN empresa_sede es ON es.sede_id = s.id WHERE s.activo = 1 AND es.empresa_id = ?').get(empresaFija)
+      : db.prepare('SELECT COUNT(*) AS n FROM sedes WHERE activo = 1').get()
+    ).then((f) => f.n),
+    agrupar(db, filtro, 'r.sede_id', 'JOIN sedes s ON s.id = r.sede_id', "s.nombre || CASE WHEN s.ciudad <> '' THEN ' (' || s.ciudad || ')' ELSE '' END"),
+    agrupar(db, filtro, 'r.cargo_id', 'JOIN cargos c ON c.id = r.cargo_id', 'c.nombre'),
+    agrupar(db, filtro, 'r.empresa_id', 'JOIN empresas e ON e.id = r.empresa_id', 'e.nombre'),
+    // Incluye puntos activos sin registros: así se detectan QR dañados o mal ubicados.
+    db
+      .prepare(
+        `SELECT p.id, p.descripcion AS etiqueta, s.nombre AS sede, p.activo,
+                COUNT(r.id) AS registros, COALESCE(SUM(r.realizo_pausa), 0) AS si,
+                COUNT(r.id) - COALESCE(SUM(r.realizo_pausa), 0) AS no, COUNT(DISTINCT r.colaborador_id) AS personas
+           FROM puntos_qr p
+           LEFT JOIN sedes s ON s.id = p.sede_id
+           LEFT JOIN registros_pausa r ON r.punto_qr_id = p.id AND ${filtro.sql}
+          WHERE p.activo = 1 OR r.id IS NOT NULL
+          GROUP BY p.id
+          ORDER BY registros DESC, etiqueta`,
+      )
+      .all(filtro.params),
+    db
+      .prepare(`${SELECT_REGISTRO} WHERE ${filtro.sql} ORDER BY r.registrado_en DESC LIMIT 50`)
       .all(filtro.params)
-      .map((f) => [f.periodo, f.registros]),
-  );
+      .then((filas) => filas.map((f) => protegerFila(f, usuario))),
+  ]);
+
+  const conteos = new Map(filasSerie.map((f) => [f.periodo, f.registros]));
   const serie = cubetas(filtro, gran).map((periodo) => ({ periodo, registros: conteos.get(periodo) ?? 0 }));
-
-  const empresaFija = usuario?.empresa_id;
-  const sedesActivas = empresaFija
-    ? db.prepare('SELECT COUNT(*) AS n FROM sedes s JOIN empresa_sede es ON es.sede_id = s.id WHERE s.activo = 1 AND es.empresa_id = ?').get(empresaFija).n
-    : db.prepare('SELECT COUNT(*) AS n FROM sedes WHERE activo = 1').get().n;
-
-  const porSede = agrupar(db, filtro, 'r.sede_id', 'JOIN sedes s ON s.id = r.sede_id', "s.nombre || CASE WHEN s.ciudad <> '' THEN ' (' || s.ciudad || ')' ELSE '' END");
-  const porCargo = agrupar(db, filtro, 'r.cargo_id', 'JOIN cargos c ON c.id = r.cargo_id', 'c.nombre');
-  const porEmpresa = agrupar(db, filtro, 'r.empresa_id', 'JOIN empresas e ON e.id = r.empresa_id', 'e.nombre');
-
-  // Incluye puntos activos sin registros: así se detectan QR dañados o mal ubicados.
-  const porPunto = db
-    .prepare(
-      `SELECT p.id, p.descripcion AS etiqueta, s.nombre AS sede, p.activo,
-              COUNT(r.id) AS registros, COALESCE(SUM(r.realizo_pausa), 0) AS si,
-              COUNT(r.id) - COALESCE(SUM(r.realizo_pausa), 0) AS no, COUNT(DISTINCT r.colaborador_id) AS personas
-         FROM puntos_qr p
-         LEFT JOIN sedes s ON s.id = p.sede_id
-         LEFT JOIN registros_pausa r ON r.punto_qr_id = p.id AND ${filtro.sql}
-        WHERE p.activo = 1 OR r.id IS NOT NULL
-        GROUP BY p.id
-        ORDER BY registros DESC, etiqueta`,
-    )
-    .all(filtro.params);
-
-  const ultimos = db
-    .prepare(`${SELECT_REGISTRO} WHERE ${filtro.sql} ORDER BY r.registrado_en DESC LIMIT 50`)
-    .all(filtro.params)
-    .map((f) => protegerFila(f, usuario));
 
   return {
     filtro: { desde: filtro.desdeLocal, hasta: filtro.hastaLocal },
@@ -168,15 +164,14 @@ export function protegerFila(fila, usuario) {
   return usuario?.rol === 'consulta' ? { ...fila, cedula: enmascararCedula(fila.cedula) } : fila;
 }
 
-export function listarRegistros(db, filtro, usuario, { pagina = 1, tamano = 50 } = {}) {
+export async function listarRegistros(db, filtro, usuario, { pagina = 1, tamano = 50 } = {}) {
   const tam = Math.min(Math.max(entero(tamano) ?? 50, 10), 500);
   const pag = Math.max(entero(pagina) ?? 1, 1);
-  const { total } = db.prepare(`SELECT COUNT(*) AS total FROM registros_pausa r WHERE ${filtro.sql}`).get(filtro.params);
-  const filas = db
-    .prepare(`${SELECT_REGISTRO} WHERE ${filtro.sql} ORDER BY r.registrado_en DESC LIMIT ${tam} OFFSET ${(pag - 1) * tam}`)
-    .all(filtro.params)
-    .map((f) => protegerFila(f, usuario));
-  return { total, pagina: pag, tamano: tam, filas };
+  const [{ total }, filas] = await Promise.all([
+    db.prepare(`SELECT COUNT(*) AS total FROM registros_pausa r WHERE ${filtro.sql}`).get(filtro.params),
+    db.prepare(`${SELECT_REGISTRO} WHERE ${filtro.sql} ORDER BY r.registrado_en DESC LIMIT ${tam} OFFSET ${(pag - 1) * tam}`).all(filtro.params),
+  ]);
+  return { total, pagina: pag, tamano: tam, filas: filas.map((f) => protegerFila(f, usuario)) };
 }
 
 // ───────────────────────── Exportación ─────────────────────────
@@ -195,11 +190,8 @@ const COLUMNAS_DETALLE = [
   { header: 'Punto QR', key: 'punto', width: 24 },
 ];
 
-function filasDetalle(db, filtro, usuario) {
-  return db
-    .prepare(`${SELECT_REGISTRO} WHERE ${filtro.sql} ORDER BY r.registrado_en`)
-    .all(filtro.params)
-    .map((f) => {
+async function filasDetalle(db, filtro, usuario) {
+  return (await db.prepare(`${SELECT_REGISTRO} WHERE ${filtro.sql} ORDER BY r.registrado_en`).all(filtro.params)).map((f) => {
       const [fecha, hora] = utcABogota(f.registrado_en).split(' ');
       return {
         ...protegerFila(f, usuario),
@@ -210,7 +202,7 @@ function filasDetalle(db, filtro, usuario) {
         motivo: f.motivo_no ?? '',
         punto: f.punto ?? '',
       };
-    });
+  });
 }
 
 function estilizarHoja(hoja) {
@@ -247,7 +239,7 @@ export async function exportarXlsx(db, filtro, usuario, tipo, organizacion) {
   libro.created = new Date();
 
   if (tipo === 'consolidado') {
-    const r = resumen(db, filtro, usuario);
+    const r = await resumen(db, filtro, usuario);
     const portada = libro.addWorksheet('Resumen');
     portada.columns = [{ width: 32 }, { width: 40 }];
     portada.addRows([
@@ -289,21 +281,21 @@ export async function exportarXlsx(db, filtro, usuario, tipo, organizacion) {
 
   const detalle = libro.addWorksheet('Detalle');
   detalle.columns = COLUMNAS_DETALLE;
-  detalle.addRows(filasDetalle(db, filtro, usuario));
+  detalle.addRows(await filasDetalle(db, filtro, usuario));
   estilizarHoja(detalle);
 
   return Buffer.from(await libro.xlsx.writeBuffer());
 }
 
 /** CSV con «;» y BOM UTF-8 para que Excel en español lo abra con tildes y columnas correctas. */
-export function exportarCsv(db, filtro, usuario, tipo) {
+export async function exportarCsv(db, filtro, usuario, tipo) {
   const celda = (v) => {
     const s = typeof v === 'number' ? String(v) : neutralizarFormula(v);
     return /[;"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lineas = [];
   if (tipo === 'consolidado') {
-    const r = resumen(db, filtro, usuario);
+    const r = await resumen(db, filtro, usuario);
     lineas.push(['Dimensión', 'Valor', 'Realizaron la pausa', 'No la realizaron', 'Total respuestas', 'Personas únicas'].join(';'));
     const bloques = [
       ['Sede', r.por_sede],
@@ -316,7 +308,7 @@ export function exportarCsv(db, filtro, usuario, tipo) {
     }
   } else {
     lineas.push(COLUMNAS_DETALLE.map((c) => c.header).join(';'));
-    for (const f of filasDetalle(db, filtro, usuario)) lineas.push(COLUMNAS_DETALLE.map((c) => celda(f[c.key])).join(';'));
+    for (const f of await filasDetalle(db, filtro, usuario)) lineas.push(COLUMNAS_DETALLE.map((c) => celda(f[c.key])).join(';'));
   }
   return '﻿' + lineas.join('\r\n') + '\r\n';
 }

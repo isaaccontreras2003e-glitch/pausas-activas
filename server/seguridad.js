@@ -1,4 +1,5 @@
 import { leerConfig } from './db.js';
+import { urlNube } from './red.js';
 import { ErrorApp } from './util.js';
 
 /**
@@ -40,7 +41,7 @@ export function cabecerasSeguridad(req, res, next) {
  * Un sitio malicioso abierto en el navegador del administrador no puede borrar ni cambiar nada en su nombre.
  */
 export function mismoOrigen(db, puerto) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
     const origen = req.get('origin') || req.get('referer');
     // Sin Origin ni Referer no es un navegador (scripts, pruebas): la sesión por cookie igual es obligatoria.
@@ -56,11 +57,12 @@ export function mismoOrigen(db, puerto) {
         .filter(Boolean)
         .map((h) => h.toLowerCase()),
     );
-    try {
-      const base = leerConfig(db).base_url;
-      if (base) permitidos.add(new URL(base).host.toLowerCase());
-    } catch {
-      /* base_url vacía o inválida */
+    for (const base of [(await leerConfig(db)).base_url, urlNube()]) {
+      try {
+        if (base) permitidos.add(new URL(base).host.toLowerCase());
+      } catch {
+        /* vacía o inválida */
+      }
     }
     if (!permitidos.has(hostOrigen)) throw new ErrorApp(403, 'ORIGEN_INVALIDO', 'Solicitud rechazada por seguridad.');
     next();
@@ -71,28 +73,31 @@ export function mismoOrigen(db, puerto) {
  * Bloqueo por cuenta: tras 5 contraseñas incorrectas seguidas para un mismo correo, esa cuenta queda bloqueada
  * 15 minutos (aunque el atacante cambie de IP). Complementa el límite por IP.
  */
-export function crearBloqueoCuentas({ maximo = 5, minutos = 15 } = {}) {
-  const fallos = new Map();
+export function crearBloqueoCuentas(db, { maximo = 5, minutos = 15 } = {}) {
   return {
-    verificar(email) {
-      const f = fallos.get(email);
-      if (f?.hasta && f.hasta > Date.now()) {
-        const resto = Math.ceil((f.hasta - Date.now()) / 60_000);
+    async verificar(email) {
+      const f = await db.prepare('SELECT hasta FROM bloqueos_login WHERE email = ?').get(email);
+      const hasta = f?.hasta ? Date.parse(f.hasta) : 0;
+      if (hasta > Date.now()) {
+        const resto = Math.ceil((hasta - Date.now()) / 60_000);
         throw new ErrorApp(429, 'CUENTA_BLOQUEADA', `Demasiados intentos fallidos. Por seguridad, esta cuenta está bloqueada ${resto} min.`);
       }
     },
-    fallo(email) {
-      const f = fallos.get(email) ?? { n: 0 };
-      f.n += 1;
-      if (f.n >= maximo) {
-        f.hasta = Date.now() + minutos * 60_000;
-        f.n = 0;
+    /** Suma un fallo; al llegar al máximo bloquea la cuenta. Devuelve true si quedó bloqueada. */
+    async fallo(email) {
+      const f = await db
+        .prepare('INSERT INTO bloqueos_login (email, fallos) VALUES (?, 1) ON CONFLICT (email) DO UPDATE SET fallos = fallos + 1 RETURNING fallos')
+        .get(email);
+      if (f.fallos >= maximo) {
+        await db
+          .prepare('UPDATE bloqueos_login SET fallos = 0, hasta = ? WHERE email = ?')
+          .run(new Date(Date.now() + minutos * 60_000).toISOString(), email);
+        return true;
       }
-      fallos.set(email, f);
-      return f.hasta && f.hasta > Date.now();
+      return false;
     },
-    exito(email) {
-      fallos.delete(email);
+    async exito(email) {
+      await db.prepare('DELETE FROM bloqueos_login WHERE email = ?').run(email);
     },
   };
 }
@@ -104,9 +109,9 @@ export function neutralizarFormula(valor) {
 }
 
 /** Registro de auditoría: quién hizo qué y desde dónde. */
-export function auditar(db, req, accion, detalle = '') {
+export async function auditar(db, req, accion, detalle = '') {
   try {
-    db.prepare('INSERT INTO auditoria (usuario_id, usuario_email, accion, detalle, ip) VALUES (?, ?, ?, ?, ?)').run(
+    await db.prepare('INSERT INTO auditoria (usuario_id, usuario_email, accion, detalle, ip) VALUES (?, ?, ?, ?, ?)').run(
       req.usuario?.id ?? null,
       req.usuario?.email ?? null,
       accion,

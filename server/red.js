@@ -21,12 +21,23 @@ export function urlBaseDetectada(puerto) {
   return `http://${ipLocal()}:${puerto}`;
 }
 
-/** URL fija del servidor en la nube: PUBLIC_URL o la que Render asigna (RENDER_EXTERNAL_URL). */
-export const urlNube = () => (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').trim().replace(/\/+$/, '');
+/**
+ * URL fija del servidor en la nube: PUBLIC_URL, o la que asigna el proveedor.
+ * En Vercel se usa el dominio de PRODUCCIÓN (no el de cada despliegue, que cambia en cada versión).
+ */
+export const urlNube = () =>
+  (
+    process.env.PUBLIC_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '') ||
+    ''
+  )
+    .trim()
+    .replace(/\/+$/, '');
 
 /** URL que se codifica en los QR: la configurada por el administrador, la de la nube o, si no hay, la de red local. */
-export function urlBasePublica(db, puerto) {
-  const configurada = (leerConfig(db).base_url ?? '').trim().replace(/\/+$/, '');
+export async function urlBasePublica(db, puerto) {
+  const configurada = ((await leerConfig(db)).base_url ?? '').trim().replace(/\/+$/, '');
   return configurada || urlNube() || urlBaseDetectada(puerto);
 }
 

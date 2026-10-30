@@ -44,21 +44,21 @@ function horaBogota(minutos = 0) {
 }
 
 before(async () => {
-  db = abrirDb(':memory:');
-  db.prepare("INSERT INTO usuarios_admin (email, nombre, rol, password_hash) VALUES ('admin@test.co', 'Admin', 'admin', ?)").run(hashPassword('ClaveSegura1'));
+  db = await abrirDb(':memory:');
+  await db.prepare("INSERT INTO usuarios_admin (email, nombre, rol, password_hash) VALUES ('admin@test.co', 'Admin', 'admin', ?)").run(hashPassword('ClaveSegura1'));
   servidor = crearApp({ db, puerto: 0 }).listen(0);
   await new Promise((r) => servidor.once('listening', r));
   base = `http://127.0.0.1:${servidor.address().port}`;
 });
 
-after(() => {
+after(async () => {
   servidor.close();
-  db.close();
+  await db.cerrar();
 });
 
 describe('primer uso: crear cuenta de administrador', () => {
   test('sin usuarios pide crear la cuenta y la crea solo una vez', async () => {
-    const dbVacia = abrirDb(':memory:');
+    const dbVacia = await abrirDb(':memory:');
     const srv = crearApp({ db: dbVacia, puerto: 0 }).listen(0);
     await new Promise((r) => srv.once('listening', r));
     const url = `http://127.0.0.1:${srv.address().port}`;
@@ -75,11 +75,11 @@ describe('primer uso: crear cuenta de administrador', () => {
       const me = await fetch(`${url}/api/auth/me`, { headers: { Cookie: cookieNueva } }).then((r) => r.json());
       assert.equal(me.email, 'ana@imes.co');
       assert.equal(me.rol, 'admin');
-      assert.equal(dbVacia.prepare("SELECT valor FROM configuracion WHERE clave = 'organizacion'").get().valor, 'Grupo IMES');
+      assert.equal((await dbVacia.prepare("SELECT valor FROM configuracion WHERE clave = 'organizacion'").get()).valor, 'Grupo IMES');
       // Desde el equipo servidor se pueden crear más administradores (sin cambiar la organización)...
       const segunda = await post({ nombre: 'Luis Gómez', email: 'luis@imes.co', password: 'ClaveSegura9', organizacion: 'Otra' });
       assert.equal(segunda.status, 201);
-      assert.equal(dbVacia.prepare("SELECT valor FROM configuracion WHERE clave = 'organizacion'").get().valor, 'Grupo IMES');
+      assert.equal((await dbVacia.prepare("SELECT valor FROM configuracion WHERE clave = 'organizacion'").get()).valor, 'Grupo IMES');
       // ...pero no con un correo repetido.
       const repetida = await post({ nombre: 'Ana Otra', email: 'ana@imes.co', password: 'ClaveSegura9' });
       assert.equal(repetida.status, 409);
@@ -92,7 +92,7 @@ describe('primer uso: crear cuenta de administrador', () => {
       assert.equal(remota.status, 403);
     } finally {
       srv.close();
-      dbVacia.close();
+      await dbVacia.cerrar();
     }
   });
 });
@@ -353,9 +353,9 @@ describe('seguridad', () => {
     assert.equal(mismo.status, 201);
   });
 
-  test('la base de datos no guarda el valor real de la cookie de sesión', () => {
+  test('la base de datos no guarda el valor real de la cookie de sesión', async () => {
     const valor = cookie.split('=')[1];
-    assert.equal(db.prepare('SELECT 1 FROM sesiones WHERE token = ?').get(valor), undefined);
+    assert.equal(await db.prepare('SELECT 1 AS ok FROM sesiones WHERE token = ?').get(valor), undefined);
   });
 
   test('exige contraseñas fuertes', async () => {
@@ -388,7 +388,7 @@ describe('nube (Render): clave de configuración e importación de datos', () =>
 
   test('sin la clave no se puede crear la primera cuenta desde fuera; con la clave sí', async () => {
     process.env.CLAVE_CONFIGURACION = CLAVE;
-    const dbVacia = abrirDb(':memory:');
+    const dbVacia = await abrirDb(':memory:');
     const srv = crearApp({ db: dbVacia, puerto: 0 }).listen(0);
     await new Promise((r) => srv.once('listening', r));
     const url = `http://127.0.0.1:${srv.address().port}`;
@@ -408,25 +408,30 @@ describe('nube (Render): clave de configuración e importación de datos', () =>
       assert.equal(otra.status, 403);
     } finally {
       srv.close();
-      dbVacia.close();
+      await dbVacia.cerrar();
       delete process.env.CLAVE_CONFIGURACION;
     }
   });
 
-  test('importa los datos cifrados del PC anterior y pide reiniciar para cargarlos', async () => {
+  test('importa los datos cifrados del PC anterior directamente en la base', async () => {
     process.env.CLAVE_CONFIGURACION = CLAVE;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pausas-test-'));
-    // Base "del PC anterior" con un administrador, cifrada como lo hace EXPORTAR-DATOS.bat.
+    // Base "del PC anterior" con un administrador, empresa, sede, cargo y un registro, cifrada como EXPORTAR-DATOS.bat.
     const origen = path.join(dir, 'origen.db');
-    const dbOrigen = abrirDb(origen);
-    dbOrigen.prepare("INSERT INTO usuarios_admin (email, nombre, rol, password_hash) VALUES ('isaac@imes.co', 'Isaac', 'admin', ?)").run(hashPassword('ClaveSegura1'));
-    dbOrigen.close();
+    const dbOrigen = await abrirDb(origen);
+    await dbOrigen.prepare("INSERT INTO usuarios_admin (email, nombre, rol, password_hash) VALUES ('isaac@imes.co', 'Isaac', 'admin', ?)").run(hashPassword('ClaveSegura1'));
+    await dbOrigen.prepare("INSERT INTO empresas (id, nombre) VALUES (1, 'IMES')").run();
+    await dbOrigen.prepare("INSERT INTO sedes (id, nombre) VALUES (1, 'SEDE 1')").run();
+    await dbOrigen.prepare("INSERT INTO cargos (id, nombre) VALUES (1, 'AUXILIAR')").run();
+    await dbOrigen.prepare("INSERT INTO colaboradores (id, cedula, nombre_completo) VALUES (1, '123456', 'Ana Ruiz')").run();
+    await dbOrigen
+      .prepare("INSERT INTO registros_pausa (colaborador_id, empresa_id, sede_id, cargo_id, nombre_snapshot, cedula_snapshot, hora_pausa) VALUES (1, 1, 1, 1, 'Ana Ruiz', '123456', '10:00')")
+      .run();
+    await dbOrigen.cerrar();
     const paquete = cifrar(fs.readFileSync(origen), 'ContrasenaPaquete1').toString('base64');
 
-    const rutaDb = path.join(dir, 'nube.db');
-    const dbNube = abrirDb(rutaDb);
-    let reinicio = 0;
-    const srv = crearApp({ db: dbNube, puerto: 0, rutaDb, alImportarDatos: () => reinicio++ }).listen(0);
+    const dbNube = await abrirDb(path.join(dir, 'nube.db'));
+    const srv = crearApp({ db: dbNube, puerto: 0 }).listen(0);
     await new Promise((r) => srv.once('listening', r));
     const url = `http://127.0.0.1:${srv.address().port}`;
     const enviar = (body) => fetch(`${url}/api/auth/importar-datos`, { method: 'POST', headers: remoto, body: JSON.stringify(body) });
@@ -437,14 +442,30 @@ describe('nube (Render): clave de configuración e importación de datos', () =>
       const basura = await enviar({ archivo_base64: cifrar(Buffer.from('no es una base'), 'x1234567890').toString('base64'), password: 'x1234567890', clave_configuracion: CLAVE });
       assert.equal(basura.status, 422);
       const ok = await enviar({ archivo_base64: paquete, password: 'ContrasenaPaquete1', clave_configuracion: CLAVE });
-      assert.equal(ok.status, 202);
-      assert.equal(reinicio, 1);
-      assert.ok(fs.existsSync(`${rutaDb}.importar`));
+      assert.equal(ok.status, 200);
+      const resultado = await ok.json();
+      assert.equal(resultado.usuarios, 1);
+      assert.equal(resultado.registros, 1);
+      // Ya se puede ingresar con la cuenta importada, y los datos están en la base.
+      const login = await fetch(`${url}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'isaac@imes.co', password: 'ClaveSegura1' }),
+      });
+      assert.equal(login.status, 200);
+      assert.equal((await dbNube.prepare('SELECT COUNT(*) AS n FROM registros_pausa').get()).n, 1);
+      // Una segunda importación ya no se permite.
+      assert.equal((await enviar({ archivo_base64: paquete, password: 'ContrasenaPaquete1', clave_configuracion: CLAVE })).status, 409);
     } finally {
       srv.close();
-      dbNube.close();
+      await dbNube.cerrar();
       delete process.env.CLAVE_CONFIGURACION;
-      fs.rmSync(dir, { recursive: true, force: true });
+      // En Windows el archivo puede tardar un instante en liberarse.
+      try {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      } catch {
+        /* carpeta temporal: Windows la limpia después */
+      }
     }
   });
 

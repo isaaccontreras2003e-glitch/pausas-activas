@@ -7,7 +7,7 @@ import { cabecerasSeguridad, mismoOrigen } from './seguridad.js';
 import { crearCanal } from './tiempo-real.js';
 import { ErrorApp } from './util.js';
 
-export function crearApp({ db, dirEstatico, puerto, rutaDb, alImportarDatos }) {
+export function crearApp({ db, dirEstatico, puerto }) {
   const app = express();
   const canal = crearCanal();
 
@@ -19,13 +19,15 @@ export function crearApp({ db, dirEstatico, puerto, rutaDb, alImportarDatos }) {
   app.use(cabecerasSeguridad);
   // Peticiones pequeñas en todo el sistema; solo la importación de cargos (Excel) y de datos admiten más.
   app.use('/api/admin/cargos/importar', express.json({ limit: '8mb' }));
+  // (En Vercel el máximo por solicitud es 4,5 MB; los datos de un año caben de sobra.)
   app.use('/api/auth/importar-datos', express.json({ limit: '50mb' }));
   app.use(express.json({ limit: '64kb' }));
   app.use('/api', mismoOrigen(db, puerto));
 
-  app.get('/api/salud', (req, res) => res.json({ ok: true }));
+  // tiempo_real: en Vercel no hay conexiones permanentes; el monitor se actualiza cada pocos segundos.
+  app.get('/api/salud', (req, res) => res.json({ ok: true, tiempo_real: !process.env.VERCEL }));
   app.use('/api/public', rutasPublicas({ db, canal }));
-  app.use('/api/auth', rutasAuth({ db, rutaDb, alImportarDatos }));
+  app.use('/api/auth', rutasAuth({ db }));
   app.use('/api/admin', rutasAdmin({ db, canal, puerto }));
   app.use('/api', () => {
     throw new ErrorApp(404, 'NO_ENCONTRADO', 'Ruta no encontrada.');

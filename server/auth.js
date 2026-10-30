@@ -37,11 +37,11 @@ export function validarPassword(password) {
 
 export const hashToken = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
 
-export function crearSesion(db, usuarioId) {
+export async function crearSesion(db, usuarioId) {
   const token = crypto.randomBytes(32).toString('hex');
   const expira = new Date(Date.now() + DURACION_SESION_MS).toISOString();
-  db.prepare('DELETE FROM sesiones WHERE expira_en < ?').run(ahoraIso());
-  db.prepare('INSERT INTO sesiones (token, usuario_id, expira_en) VALUES (?, ?, ?)').run(hashToken(token), usuarioId, expira);
+  await db.prepare('DELETE FROM sesiones WHERE expira_en < ?').run(ahoraIso());
+  await db.prepare('INSERT INTO sesiones (token, usuario_id, expira_en) VALUES (?, ?, ?)').run(hashToken(token), usuarioId, expira);
   return token;
 }
 
@@ -59,11 +59,11 @@ function leerCookie(req, nombre) {
 }
 
 /** Devuelve el usuario de la cookie de sesión. `token` en el resultado es el hash guardado en la base. */
-export function usuarioDeSesion(db, req) {
+export async function usuarioDeSesion(db, req) {
   const cookie = leerCookie(req, COOKIE);
   if (!cookie || !/^[a-f0-9]{64}$/.test(cookie)) return null;
   const token = hashToken(cookie);
-  const usuario = db
+  const usuario = await db
     .prepare(
       `SELECT u.id, u.email, u.nombre, u.rol, u.empresa_id, e.nombre AS empresa_nombre
          FROM sesiones s
@@ -77,8 +77,8 @@ export function usuarioDeSesion(db, req) {
 
 /** Middleware: exige sesión y, opcionalmente, uno de los roles indicados. */
 export function requiereSesion(db, roles = null) {
-  return (req, res, next) => {
-    const usuario = usuarioDeSesion(db, req);
+  return async (req, res, next) => {
+    const usuario = await usuarioDeSesion(db, req);
     if (!usuario) throw new ErrorApp(401, 'NO_AUTENTICADO', 'Tu sesión expiró. Ingresa de nuevo.');
     if (roles && !roles.includes(usuario.rol)) throw new ErrorApp(403, 'SIN_PERMISO', 'No tienes permiso para esta acción.');
     req.usuario = usuario;

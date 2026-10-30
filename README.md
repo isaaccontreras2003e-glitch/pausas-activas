@@ -29,19 +29,36 @@ Registro de asistencia a pausas activas mediante código QR, con monitor en tiem
   ```
   En Cloudflare, el túnel debe apuntar a `http://localhost:3000`. Después ejecuta DETENER-SISTEMA.bat y ACTIVAR-SISTEMA.bat.
 
-## Publicar en la nube (Render) — enlace y QR fijos
+## Publicar en la nube gratis (Vercel + Turso) — enlace y QR fijos
 
-El repositorio incluye `render.yaml`: servidor web **Starter** con **disco permanente** de 1 GB en `/var/data` (base de datos y respaldos diarios). El plan gratuito no sirve porque no tiene disco: se borrarían los datos.
+- **Vercel** (plan Hobby, gratis) publica la página y el servidor: `https://TU-PROYECTO.vercel.app`.
+- **Turso** (plan gratuito, sin tarjeta) guarda los datos. Es SQLite en la nube: el mismo motor del sistema.
+- Ambas cuentas se crean con GitHub. *Nota: el plan Hobby de Vercel es, según sus términos, para uso personal/no comercial.*
 
-1. En [render.com](https://render.com) entra con tu cuenta de GitHub → **New → Blueprint** → elige este repositorio → **Apply**. Render pide un medio de pago (≈ US$7–8/mes entre servidor y disco).
-2. Espera a que el despliegue quede en **Live**. La dirección fija es la que muestra Render, por ejemplo `https://pausas-activas.onrender.com`.
-3. Copia la clave en Render → servicio **pausas-activas** → **Environment** → `CLAVE_CONFIGURACION`.
-4. En el PC donde hoy funciona el sistema, ejecuta **EXPORTAR-DATOS.bat**: crea en el Escritorio `datos-pausas-activas_FECHA.cifrado`.
-5. Abre `https://TU-SERVICIO.onrender.com/admin` → **Importar datos del PC anterior** → sube el archivo, escribe su contraseña y la clave de configuración. El servidor se reinicia y ya puedes ingresar con tus cuentas de siempre. (O elige **Crear cuenta nueva** para empezar de cero.)
-6. El QR del panel ya apunta a la dirección fija: imprímelo o envíalo **una sola vez**.
-7. En el PC anterior: **DESACTIVAR-INICIO-AUTOMATICO.bat**, para que no queden dos sistemas.
+**1. Base de datos en Turso**
+1. Entra a [turso.tech](https://turso.tech) con GitHub → **Create Database** (nombre `pausas-activas`, región la más cercana).
+2. En la base: copia la **URL** (`libsql://pausas-activas-….turso.io`) y crea un **token** (*Generate token*, permisos de lectura y escritura).
 
-Cada `git push` a `main` vuelve a desplegar automáticamente; los datos del disco se conservan.
+**2. Proyecto en Vercel**
+1. Entra a [vercel.com](https://vercel.com) con GitHub → **Add New → Project** → importa este repositorio.
+2. Antes de *Deploy*, en **Environment Variables** agrega:
+
+| Variable | Valor |
+|---|---|
+| `TURSO_DATABASE_URL` | la URL de Turso (`libsql://…`) |
+| `TURSO_AUTH_TOKEN` | el token de Turso |
+| `CLAVE_CONFIGURACION` | una clave larga y secreta (mínimo 16 caracteres) para la configuración inicial |
+| `TRUST_PROXY` | `1` |
+
+3. **Deploy**. La dirección fija es la de producción del proyecto (p. ej. `https://pausas-activas.vercel.app`).
+
+**3. Llevar los datos**
+1. En el PC donde hoy funciona el sistema: **EXPORTAR-DATOS.bat** → crea `datos-pausas-activas_FECHA.cifrado` en el Escritorio.
+2. Abre `https://TU-PROYECTO.vercel.app/admin` → **Importar datos del PC anterior** → clave de configuración + archivo + su contraseña. Ya puedes ingresar con tus cuentas de siempre. (O **Crear cuenta nueva** para empezar de cero.)
+3. El QR del panel ya apunta a la dirección fija: imprímelo o envíalo **una sola vez**.
+4. En el PC anterior: **DESACTIVAR-INICIO-AUTOMATICO.bat**.
+
+En Vercel el monitor se actualiza cada 15 s (no hay conexiones permanentes) y los respaldos los hace Turso. Cada `git push` a `main` vuelve a publicar automáticamente; los datos en Turso se conservan.
 
 ## Instalador para otro PC
 

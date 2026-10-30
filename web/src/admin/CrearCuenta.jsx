@@ -101,7 +101,7 @@ function CampoClave({ valor, onCambio, error }) {
       etiqueta="Clave de configuración"
       requerido
       error={error}
-      ayuda="Está en Render → servicio pausas-activas → Environment → CLAVE_CONFIGURACION."
+      ayuda="Es el valor de CLAVE_CONFIGURACION en Vercel → tu proyecto → Settings → Environment Variables."
       htmlFor="cc-clave"
     >
       <Entrada id="cc-clave" type="password" value={valor} onChange={(e) => onCambio(e.target.value)} autoComplete="off" error={error} />
