@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 200" role="img" aria-label="IMES">
+  <title>IMES</title>
+  <g stroke="#1f6fb8" stroke-width="20" fill="none" stroke-linecap="round">
+    <circle cx="92" cy="100" r="62"/>
+    <line x1="46" y1="160" x2="138" y2="40"/>
+  </g>
+  <text x="182" y="146" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-weight="700" font-size="134" fill="#1f6fb8" textLength="360" lengthAdjust="spacingAndGlyphs">IMES</text>
+</svg>

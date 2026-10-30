@@ -1,0 +1,14 @@
+node_modules/
+dist/
+data/
+.env
+*.log
+herramientas/
+ENLACE-ACTUAL.txt
+QR-DEL-DIA.png
+datos-cifrados/
+*.zip
+*.exe
+*.db
+*.db-wal
+*.db-shm
