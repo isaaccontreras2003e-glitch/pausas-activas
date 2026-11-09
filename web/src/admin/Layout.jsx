@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { FranjaLogos } from '../components/Logos.jsx';
-import { Boton, Campo, Entrada, Icono, Modal, useAviso } from '../components/ui.jsx';
+import { Boton, Campo, EntradaClave, Icono, Modal, useAviso } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
 import { puedeGestionar, useAdmin } from './AdminApp.jsx';
 
@@ -162,13 +162,13 @@ function ModalClave({ abierto, onCerrar }) {
     >
       <div className="space-y-4">
         <Campo etiqueta="Contraseña actual" error={errores.actual} htmlFor="c-actual">
-          <Entrada id="c-actual" type="password" autoComplete="current-password" value={f.actual} onChange={(e) => setF({ ...f, actual: e.target.value })} />
+          <EntradaClave id="c-actual" autoComplete="current-password" value={f.actual} onChange={(e) => setF({ ...f, actual: e.target.value })} />
         </Campo>
         <Campo etiqueta="Nueva contraseña" error={errores.password} ayuda="Mínimo 10 caracteres, con al menos una letra y un número." htmlFor="c-nueva">
-          <Entrada id="c-nueva" type="password" autoComplete="new-password" value={f.nueva} onChange={(e) => setF({ ...f, nueva: e.target.value })} />
+          <EntradaClave id="c-nueva" autoComplete="new-password" value={f.nueva} onChange={(e) => setF({ ...f, nueva: e.target.value })} />
         </Campo>
         <Campo etiqueta="Confirmar nueva contraseña" error={errores.confirmar} htmlFor="c-confirmar">
-          <Entrada id="c-confirmar" type="password" autoComplete="new-password" value={f.confirmar} onChange={(e) => setF({ ...f, confirmar: e.target.value })} />
+          <EntradaClave id="c-confirmar" autoComplete="new-password" value={f.confirmar} onChange={(e) => setF({ ...f, confirmar: e.target.value })} />
         </Campo>
         {errores.general && <p className="text-sm text-red-600">{errores.general}</p>}
       </div>

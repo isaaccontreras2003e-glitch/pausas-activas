@@ -62,6 +62,26 @@ export function Entrada({ error, className = '', ...props }) {
   return <input className={`${claseEntrada} ${error ? 'ring-red-400' : ''} ${className}`} aria-invalid={!!error} {...props} />;
 }
 
+/** Campo de contraseña con ojito para mostrar u ocultar lo escrito. Solo se usa al cambiar contraseñas. */
+export function EntradaClave({ error, className = '', ...props }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="relative">
+      <Entrada type={visible ? 'text' : 'password'} error={error} className={`pr-10 ${className}`} {...props} />
+      <button
+        type="button"
+        onClick={() => setVisible((v) => !v)}
+        className="absolute inset-y-0 right-0 grid w-10 place-items-center text-slate-500 hover:text-slate-800 focus-visible:outline-none focus-visible:text-marca-700"
+        aria-label={visible ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+        aria-pressed={visible}
+        title={visible ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+      >
+        <Icono nombre={visible ? 'ojoNo' : 'ojo'} className="size-5" />
+      </button>
+    </div>
+  );
+}
+
 export function Seleccion({ error, className = '', children, ...props }) {
   return (
     <select className={`${claseEntrada} pr-8 ${error ? 'ring-red-400' : ''} ${className}`} aria-invalid={!!error} {...props}>
@@ -231,6 +251,8 @@ const TRAZOS = {
   abajo: 'M6 9l6 6 6-6',
   pausa: 'M10 9v6m4-6v6M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0z',
   reproducir: 'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0zM10 8l6 4-6 4z',
+  ojo: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zm10 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  ojoNo: 'M17.9 17.9A10.7 10.7 0 0 1 12 19c-6.4 0-10-7-10-7a18 18 0 0 1 5.1-5.9M9.9 4.2A9.7 9.7 0 0 1 12 5c6.4 0 10 7 10 7a18 18 0 0 1-2.2 3.2M14.1 14.1a3 3 0 1 1-4.2-4.2M2 2l20 20',
 };
 
 export function Icono({ nombre, className = 'size-5' }) {

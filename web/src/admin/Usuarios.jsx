@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alerta, Boton, Campo, Entrada, Icono, Insignia, Modal, Seleccion, Spinner, Tarjeta, useAviso } from '../components/ui.jsx';
+import { Alerta, Boton, Campo, Entrada, EntradaClave, Icono, Insignia, Modal, Seleccion, Spinner, Tarjeta, useAviso } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
 import { useAdmin } from './AdminApp.jsx';
 
@@ -23,6 +23,10 @@ export default function Usuarios() {
   }, [cargar]);
 
   const guardar = async () => {
+    // La contraseña se escribe dos veces (solo si se va a crear o cambiar).
+    if ((edicion.password || edicion.confirmar) && edicion.password !== edicion.confirmar) {
+      return setErrores({ confirmar: 'Las contraseñas no coinciden.' });
+    }
     setGuardando(true);
     try {
       const cuerpo = { nombre: edicion.nombre, rol: edicion.rol, empresa_id: edicion.empresa_id || null, activo: edicion.activo };
@@ -49,7 +53,7 @@ export default function Usuarios() {
         <Boton
           onClick={() => {
             setErrores({});
-            setEdicion({ email: '', nombre: '', rol: 'sst', empresa_id: '', password: '', activo: true });
+            setEdicion({ email: '', nombre: '', rol: 'sst', empresa_id: '', password: '', confirmar: '', activo: true });
           }}
         >
           <Icono nombre="mas" className="size-4" /> Nuevo usuario
@@ -90,7 +94,7 @@ export default function Usuarios() {
                         tamano="sm"
                         onClick={() => {
                           setErrores({});
-                          setEdicion({ ...u, empresa_id: u.empresa_id ?? '', password: '', activo: !!u.activo });
+                          setEdicion({ ...u, empresa_id: u.empresa_id ?? '', password: '', confirmar: '', activo: !!u.activo });
                         }}
                       >
                         <Icono nombre="lapiz" className="size-4" /> Editar
@@ -157,7 +161,10 @@ export default function Usuarios() {
               }
               htmlFor="u-pass"
             >
-              <Entrada id="u-pass" type="password" autoComplete="new-password" value={edicion.password} onChange={(e) => setEdicion({ ...edicion, password: e.target.value })} />
+              <EntradaClave id="u-pass" autoComplete="new-password" value={edicion.password} onChange={(e) => setEdicion({ ...edicion, password: e.target.value })} />
+            </Campo>
+            <Campo etiqueta={edicion.id ? 'Confirmar nueva contraseña' : 'Confirmar contraseña'} requerido={!edicion.id} error={errores.confirmar} htmlFor="u-pass2">
+              <EntradaClave id="u-pass2" autoComplete="new-password" value={edicion.confirmar} onChange={(e) => setEdicion({ ...edicion, confirmar: e.target.value })} />
             </Campo>
             {edicion.id && edicion.id !== yo.id && (
               <label className="flex items-center gap-2 text-sm">
