@@ -13,3 +13,5 @@ datos-cifrados/
 *.db-wal
 *.db-shm
 *.cifrado
+
+.claude/settings.local.json
