@@ -156,7 +156,7 @@ export function rutasAdmin({ db, canal, puerto }) {
     res.on('finish', () => {
       if (res.statusCode >= 400) return;
       const b = req.body ?? {};
-      const objeto = b.nombre ?? b.descripcion ?? b.email ?? b.nombre_archivo ?? '';
+      const objeto = b.nombre ?? b.descripcion ?? b.email ?? b.nombre_archivo ?? (Array.isArray(b.ids) ? `${b.ids.length} registro(s)` : '');
       const extra = b.activo === false ? ' (desactivado)' : b.activo === true ? ' (activado)' : b.password ? ' (con cambio de contraseña)' : '';
       auditar(db, req, describirAccion(req.method, req.path), `${objeto}${extra}`);
     });
@@ -186,6 +186,18 @@ export function rutasAdmin({ db, canal, puerto }) {
   r.get('/registros', async (req, res) => {
     const filtro = construirFiltro(req.query, req.usuario);
     res.json(await listarRegistros(db, filtro, req.usuario, { pagina: req.query.pagina, tamano: req.query.tamano }));
+  });
+
+  // Elimina registros (p. ej. de pruebas). Solo admin y SST; un usuario ligado a una empresa solo borra los de ella.
+  r.delete('/registros', gestion, async (req, res) => {
+    const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number))].filter((n) => Number.isInteger(n) && n > 0);
+    if (!ids.length) throw new ErrorApp(400, 'SIN_SELECCION', 'Selecciona al menos un registro.');
+    if (ids.length > 500) throw new ErrorApp(400, 'DEMASIADOS', 'Máximo 500 registros por vez.');
+    const marcas = ids.map(() => '?').join(',');
+    const restriccion = req.usuario.empresa_id ? ' AND empresa_id = ?' : '';
+    const params = req.usuario.empresa_id ? [...ids, req.usuario.empresa_id] : ids;
+    const { changes } = await db.prepare(`DELETE FROM registros_pausa WHERE id IN (${marcas})${restriccion}`).run(...params);
+    res.json({ ok: true, eliminados: changes });
   });
 
   r.get('/exportar', async (req, res) => {
@@ -492,7 +504,7 @@ export function rutasAdmin({ db, canal, puerto }) {
   return r;
 }
 
-const RECURSOS = { empresas: 'empresa', sedes: 'sede', cargos: 'cargo', puntos: 'QR', usuarios: 'usuario', config: 'configuración' };
+const RECURSOS = { registros: 'registros de pausas', empresas: 'empresa', sedes: 'sede', cargos: 'cargo', puntos: 'QR', usuarios: 'usuario', config: 'configuración' };
 
 function describirAccion(metodo, ruta) {
   if (ruta === '/cargos/importar') return 'Importó cargos';
